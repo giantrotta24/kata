@@ -59,3 +59,8 @@ it('rejects a todo without a title', async () => {
   const res = await fetch(`${base}/todos`, { method: 'POST', body: JSON.stringify({ title: ' ' }) });
   expect(res.status).toBe(400);
 });
+
+it('rejects a null body', async () => {
+  const res = await fetch(`${base}/todos`, { method: 'POST', body: 'null' });
+  expect(res.status).toBe(400);
+});

@@ -13,10 +13,11 @@ function sendJson(res: ServerResponse, status: number, body: unknown) {
   res.end(JSON.stringify(body));
 }
 
-async function readJson(req: IncomingMessage): Promise<unknown> {
+async function readJson(req: IncomingMessage): Promise<object> {
   let raw = '';
   for await (const chunk of req) raw += chunk;
-  return raw ? JSON.parse(raw) : {};
+  const parsed: unknown = raw ? JSON.parse(raw) : {};
+  return typeof parsed === 'object' && parsed !== null ? parsed : {};
 }
 
 function toNumber(value: string | null, fallback: number): number {

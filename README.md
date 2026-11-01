@@ -51,13 +51,13 @@ Edit the files in the workspace's `starter/` folder. The README there is the spe
 | `kata submit [--assisted]` | Grades the current challenge. `--assisted` keeps the streak but earns no XP or level credit. |
 | `kata hint` | Next of three hints. Each costs 25% of the XP. |
 | `kata reroll` | Once a day: swap the daily for another on the same track and level. Counts as a rough outcome. |
-| `kata flag` | The challenge is broken: removes it from the bank and refunds the day. |
+| `kata flag [--yes]` | The challenge is broken: removes it from the bank and refunds the day. Run it from the challenge's workspace, or pass `--yes` to flag the current challenge from anywhere. |
 | `kata next [--track] [--level]` | An extra challenge. Full XP; doesn't count for the streak. |
 | `kata import <dirs...>` | Validate challenge folders that include `solution/` and admit those that pass. |
 | `kata generate [--count N] [--track] [--level] [--type]` | Generate challenges with `claude -p`, validate them, admit what passes. |
 | `kata nudge` | The shell reminder. |
 
-"Current challenge" is the one whose workspace you're in, or else the most recently started unfinished one.
+"Current challenge" is the one whose workspace you're in, or else today's unfinished daily, or else the most recently started unfinished one.
 
 ## Scoring
 
@@ -103,3 +103,5 @@ A challenge folder has `meta.json`, `README.md`, `hints.md` (three `## ` section
 - `extend` challenges list their pre-existing suite in `meta.json` `existingTests`.
 
 A challenge is admitted only if the reference passes every test, the untouched starter fails at least one, the reference passes a second run, and (for `extend`) the starter passes the existing suite. Rejections name the failed check.
+
+A run that doesn't finish within 120 s is killed and counts as a failure: a timed-out submit is recorded as a failed submit, and a timed-out validation rejects the challenge.
