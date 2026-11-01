@@ -1,0 +1,1 @@
+-- Customers who have never placed an order: name, signed_up (YYYY-MM-DD text).

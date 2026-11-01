@@ -1,0 +1,9 @@
+{
+  "id": "bad-flaky",
+  "title": "Bad fixture: passes once, fails on a rerun",
+  "track": "ts-backend",
+  "type": "build",
+  "level": 1,
+  "estimateMinutes": 5,
+  "concepts": ["fixture"]
+}

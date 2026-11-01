@@ -1,0 +1,9 @@
+{
+  "id": "fe-user-search",
+  "title": "User search box",
+  "track": "ts-frontend",
+  "type": "build",
+  "level": 2,
+  "estimateMinutes": 25,
+  "concepts": ["react-state", "fetch", "forms", "loading-and-error-states"]
+}

@@ -1,0 +1,10 @@
+{
+  "id": "sql-customer-report",
+  "title": "Customer report: who never ordered",
+  "track": "sql",
+  "type": "extend",
+  "level": 2,
+  "estimateMinutes": 15,
+  "concepts": ["left-join", "anti-join", "null-handling"],
+  "existingTests": ["tests/customer_totals.test.ts"]
+}
