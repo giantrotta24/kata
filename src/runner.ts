@@ -15,6 +15,7 @@ export interface SuiteResult {
   tests: TestCase[];
   errors: string[];
   runMs: number;
+  timedOut?: boolean;
 }
 
 export interface RunRequest {
@@ -28,7 +29,10 @@ export interface Runner {
   run(request: RunRequest): Promise<SuiteResult>;
 }
 
-const RUN_TIMEOUT_MS = 180_000;
+// run.mjs kills Vitest after RUN_TIMEOUT_MS. The outer limit is a backstop for
+// a container that hangs anyway, and removes it.
+export const RUN_TIMEOUT_MS = 120_000;
+const OUTER_TIMEOUT_MS = RUN_TIMEOUT_MS + 60_000;
 const CONTAINER_ROOT = '/opt/runner';
 
 function firstLine(text: string | undefined): string | undefined {
@@ -47,8 +51,12 @@ interface VitestAssertion {
   failureMessages?: string[];
 }
 
+// run.mjs writes { timedOut, timeoutMs } in place of Vitest's report when it
+// kills a run that never finished.
 interface VitestReport {
   success?: boolean;
+  timedOut?: boolean;
+  timeoutMs?: number;
   testResults?: {
     name?: string;
     status?: string;
@@ -57,7 +65,18 @@ interface VitestReport {
   }[];
 }
 
+function timedOutResult(timeoutMs: number): Omit<SuiteResult, 'runMs'> {
+  const seconds = Math.round(timeoutMs / 1000);
+  return {
+    passed: false,
+    tests: [],
+    errors: [`timed out after ${seconds} s: the code never finished (an infinite loop?)`],
+    timedOut: true,
+  };
+}
+
 export function parseVitestReport(report: VitestReport): Omit<SuiteResult, 'runMs'> {
+  if (report.timedOut) return timedOutResult(report.timeoutMs ?? RUN_TIMEOUT_MS);
   const tests: TestCase[] = [];
   const errors: string[] = [];
   for (const file of report.testResults ?? []) {
@@ -84,6 +103,7 @@ interface ExecResult {
   code: number | null;
   stdout: string;
   stderr: string;
+  timedOut: boolean;
 }
 
 function exec(command: string, args: string[]): Promise<ExecResult> {
@@ -91,7 +111,11 @@ function exec(command: string, args: string[]): Promise<ExecResult> {
     const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
-    const timer = setTimeout(() => child.kill('SIGKILL'), RUN_TIMEOUT_MS);
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGKILL');
+    }, OUTER_TIMEOUT_MS);
     child.stdout.on('data', (chunk) => (stdout += chunk));
     child.stderr.on('data', (chunk) => (stderr += chunk));
     child.on('error', (error) => {
@@ -100,7 +124,7 @@ function exec(command: string, args: string[]): Promise<ExecResult> {
     });
     child.on('close', (code) => {
       clearTimeout(timer);
-      resolve({ code, stdout, stderr });
+      resolve({ code, stdout, stderr, timedOut });
     });
   });
 }
@@ -119,6 +143,7 @@ export class DockerRunner implements Runner {
     mkdirSync(this.runsDir, { recursive: true });
     const outDir = mkdtempSync(path.join(this.runsDir, 'out-'));
     const compose = ['compose', '-f', this.composeFile, '-p', 'kata'];
+    const container = `kata-${path.basename(outDir)}`;
     const started = Date.now();
     try {
       const result = await exec('docker', [
@@ -126,6 +151,8 @@ export class DockerRunner implements Runner {
         'run',
         '--rm',
         '-T',
+        '--name',
+        container,
         ...(request.track === 'sql' ? [] : ['--no-deps']),
         '-v',
         `${path.resolve(request.srcDir)}:${CONTAINER_ROOT}/work/src`,
@@ -135,10 +162,14 @@ export class DockerRunner implements Runner {
         `${outDir}:${CONTAINER_ROOT}/out`,
         '-e',
         `KATA_TRACK=${request.track}`,
+        '-e',
+        `KATA_TIMEOUT_MS=${RUN_TIMEOUT_MS}`,
         'runner',
         ...(request.only ?? []).map((file) => `work/${file}`),
       ]);
+      if (result.timedOut) await exec('docker', ['rm', '-f', container]);
       if (request.track === 'sql') await exec('docker', [...compose, 'stop', 'postgres']);
+      if (result.timedOut) return { ...timedOutResult(OUTER_TIMEOUT_MS), runMs: Date.now() - started };
 
       const reportFile = path.join(outDir, 'result.json');
       if (!existsSync(reportFile)) {

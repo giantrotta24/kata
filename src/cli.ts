@@ -76,7 +76,8 @@ program
 program
   .command('flag')
   .description('Mark the current challenge broken and remove it from the bank')
-  .action((_options, command) => withKata(command, (kata) => kata.flag()));
+  .option('--yes', "flag it even though you're not inside its workspace")
+  .action((options, command) => withKata(command, (kata) => kata.flag({ yes: Boolean(options.yes) })));
 
 program
   .command('next')

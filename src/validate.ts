@@ -37,7 +37,8 @@ function structureProblems(dir: string): { meta?: ChallengeMeta; problems: strin
   } catch {
     return { problems: ['meta.json is not valid JSON'] };
   }
-  problems.push(...metaProblems(meta));
+  const invalid = metaProblems(meta);
+  if (invalid.length > 0) return { problems: invalid };
   const valid = meta as ChallengeMeta;
 
   const hints = parseHints(readFileSync(path.join(dir, 'hints.md'), 'utf8'));
@@ -76,18 +77,29 @@ export async function validateChallenge(dir: string, runner: Runner, runsDir: st
     const testsDir = path.join(dir, 'tests');
     const reject = (check: Check, detail: string): Verdict => ({ id: meta.id, admitted: false, check, detail });
 
-    const first = await runner.run({ track: meta.track, srcDir: referenceDir, testsDir });
-    if (!first.passed) return reject('reference-passes', failures(first));
+    // A runner error rejects the challenge at the check that was running, so one
+    // bad challenge never aborts the rest of a batch.
+    let check: Check = 'reference-passes';
+    try {
+      const first = await runner.run({ track: meta.track, srcDir: referenceDir, testsDir });
+      if (!first.passed) return reject(check, failures(first));
 
-    const starter = await runner.run({ track: meta.track, srcDir: starterDir, testsDir });
-    if (starter.passed) return reject('starter-fails', `all ${starter.tests.length} tests pass on the starter`);
+      check = 'starter-fails';
+      const starter = await runner.run({ track: meta.track, srcDir: starterDir, testsDir });
+      if (starter.passed) return reject(check, `all ${starter.tests.length} tests pass on the starter`);
+      if (!starter.tests.some((test) => !test.passed)) return reject(check, `no test failed on the starter: ${failures(starter)}`);
 
-    const second = await runner.run({ track: meta.track, srcDir: referenceDir, testsDir });
-    if (!second.passed) return reject('reference-stable', `second run failed: ${failures(second)}`);
+      check = 'reference-stable';
+      const second = await runner.run({ track: meta.track, srcDir: referenceDir, testsDir });
+      if (!second.passed) return reject(check, `second run failed: ${failures(second)}`);
 
-    if (meta.type === 'extend') {
-      const existing = await runner.run({ track: meta.track, srcDir: starterDir, testsDir, only: meta.existingTests });
-      if (!existing.passed) return reject('extend-suite', failures(existing));
+      if (meta.type === 'extend') {
+        check = 'extend-suite';
+        const existing = await runner.run({ track: meta.track, srcDir: starterDir, testsDir, only: meta.existingTests });
+        if (!existing.passed) return reject(check, failures(existing));
+      }
+    } catch (error) {
+      return reject(check, `runner error: ${(error as Error).message}`);
     }
     return { id: meta.id, admitted: true };
   } finally {
@@ -96,8 +108,7 @@ export async function validateChallenge(dir: string, runner: Runner, runsDir: st
 }
 
 export function admit(stagedDir: string, bankDir: string, id: string): void {
+  rmSync(path.join(stagedDir, 'solution'), { recursive: true, force: true });
   mkdirSync(bankDir, { recursive: true });
-  const target = path.join(bankDir, id);
-  renameSync(stagedDir, target);
-  rmSync(path.join(target, 'solution'), { recursive: true, force: true });
+  renameSync(stagedDir, path.join(bankDir, id));
 }

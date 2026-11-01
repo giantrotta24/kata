@@ -1,10 +1,12 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import pg from 'pg';
 
 const ROOT = '/opt/runner';
 const SEED_FILE = `${ROOT}/work/tests/seed.sql`;
+const REPORT_FILE = `${ROOT}/out/result.json`;
 const track = process.env.KATA_TRACK;
+const timeoutMs = Number(process.env.KATA_TIMEOUT_MS) || 120_000;
 const filters = process.argv.slice(2);
 
 async function withClient(database, action) {
@@ -41,11 +43,16 @@ const result = spawnSync(
     '--config',
     'vitest.config.mjs',
     '--reporter=json',
-    '--outputFile=out/result.json',
+    `--outputFile=${REPORT_FILE}`,
     ...filters,
   ],
-  { cwd: ROOT, env, stdio: 'inherit' },
+  // A synchronous infinite loop blocks Vitest's own test timeout, so kill the
+  // whole run. This process is the container's PID 1; when it exits, any
+  // leftover Vitest workers die with the container.
+  { cwd: ROOT, env, stdio: 'inherit', timeout: timeoutMs, killSignal: 'SIGKILL' },
 );
+const timedOut = result.error?.code === 'ETIMEDOUT';
+if (timedOut) writeFileSync(REPORT_FILE, JSON.stringify({ success: false, timedOut: true, timeoutMs }));
 
 if (database) {
   await withClient('postgres', (client) => client.query(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`));

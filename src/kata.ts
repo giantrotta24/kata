@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import path from 'node:path';
-import { copyDir, loadBank, parseHints, readMeta, subdirectories } from './bank.js';
+import { clearStale, copyDir, loadBank, parseHints, readMeta, subdirectories } from './bank.js';
 import { openDb, type DB } from './db.js';
 import { dayKey } from './day.js';
 import { homePaths, loadConfig, PACKAGE_ROOT, type Config } from './home.js';
@@ -58,6 +58,11 @@ export interface KataOptions {
   openEditor?: (command: string, dir: string) => void;
 }
 
+interface Current {
+  assignment: Assignment;
+  inWorkspace: boolean;
+}
+
 export interface SubmitOutcome {
   passed: boolean;
   xp: number;
@@ -71,6 +76,14 @@ function launchEditor(command: string, dir: string): void {
   const child = spawn(bin, [...args, dir], { detached: true, stdio: 'ignore' });
   child.on('error', (error) => console.error(`Could not open the editor (${command}): ${error.message}`));
   child.unref();
+}
+
+function realpathOr(target: string): string {
+  try {
+    return realpathSync(target);
+  } catch {
+    return path.resolve(target);
+  }
 }
 
 export class Kata {
@@ -144,18 +157,26 @@ export class Kata {
     return this.db.prepare('SELECT level, clean, rough FROM tracks WHERE track = ?').get(track) as TrackProgress;
   }
 
-  private current(): Assignment | undefined {
+  // The challenge whose workspace holds the cwd, else the active daily, else the
+  // most recently started one.
+  private current(): Current | undefined {
     const active = this.db
       .prepare(`SELECT * FROM assignments WHERE status = 'active' ORDER BY started_at DESC, id DESC`)
       .all() as Assignment[];
-    const inside = active.find((a) => this.cwd === a.workspace || this.cwd.startsWith(a.workspace + path.sep));
-    return inside ?? active[0];
+    const cwd = realpathOr(this.cwd);
+    const inside = active.find((a) => {
+      const workspace = realpathOr(a.workspace);
+      return cwd === workspace || cwd.startsWith(workspace + path.sep);
+    });
+    if (inside) return { assignment: inside, inWorkspace: true };
+    const fallback = active.find((a) => a.kind === 'daily') ?? active[0];
+    return fallback && { assignment: fallback, inWorkspace: false };
   }
 
-  private requireCurrent(): Assignment {
-    const assignment = this.current();
-    if (!assignment) throw new KataError('No challenge in progress. Run `kata today`.');
-    return assignment;
+  private requireCurrent(): Current {
+    const current = this.current();
+    if (!current) throw new KataError('No challenge in progress. Run `kata today`.');
+    return current;
   }
 
   pickState(day: string): PickState {
@@ -258,10 +279,13 @@ export class Kata {
   // --- grading ----------------------------------------------------------------
 
   async submit({ assisted = false }: { assisted?: boolean } = {}): Promise<SubmitOutcome> {
-    let assignment = this.requireCurrent();
+    let { assignment } = this.requireCurrent();
     const challengeDir = path.join(this.paths.bank, assignment.challenge_id);
     if (!existsSync(challengeDir)) throw new KataError(`${assignment.challenge_id} is no longer in the bank.`);
 
+    // The submit counts for the day it was made, however long grading takes.
+    const now = this.now();
+    this.clearScratch();
     mkdirSync(this.paths.runs, { recursive: true });
     const runDir = mkdtempSync(path.join(this.paths.runs, 'submit-'));
     let result: SuiteResult;
@@ -280,8 +304,8 @@ export class Kata {
     for (const error of result.errors) this.log(`  ERROR ${error}`);
     const passedCount = result.tests.filter((test) => test.passed).length;
     this.log(`${passedCount}/${result.tests.length} tests passed in ${(result.runMs / 1000).toFixed(1)}s.`);
+    if (result.timedOut) this.log('Timed out: the code never finished. Recorded as a failed submit.');
 
-    const now = this.now();
     this.db
       .prepare(
         `INSERT INTO attempts (assignment_id, submitted_at, passed, assisted, tests_passed, tests_total, run_ms)
@@ -331,7 +355,7 @@ export class Kata {
   // --- help, skipping, flagging -------------------------------------------------
 
   hint(): string | undefined {
-    const assignment = this.requireCurrent();
+    const { assignment } = this.requireCurrent();
     const hints = parseHints(readFileSync(path.join(this.paths.bank, assignment.challenge_id, 'hints.md'), 'utf8'));
     if (assignment.hints >= hints.length) {
       this.log('No hints left for this challenge.');
@@ -372,8 +396,17 @@ export class Kata {
     return assignment;
   }
 
-  flag(): Assignment {
-    const assignment = this.requireCurrent();
+  flag({ yes = false }: { yes?: boolean } = {}): Assignment {
+    const current = this.requireCurrent();
+    if (!current.inWorkspace && !yes) {
+      throw new KataError(
+        `You're not inside a challenge workspace. Run \`kata flag\` from the workspace of the challenge to flag, ` +
+          `or \`kata flag --yes\` to flag ${current.assignment.challenge_id} (${current.assignment.workspace}).`,
+      );
+    }
+    const day = this.day();
+    let { assignment } = current;
+    if (assignment.kind === 'daily' && assignment.day !== day) assignment = this.carryOver(assignment, day);
     this.db.transaction(() => {
       this.db.prepare(`UPDATE assignments SET status = 'flagged' WHERE id = ?`).run(assignment.id);
       if (assignment.kind === 'daily') {
@@ -441,6 +474,10 @@ export class Kata {
     return verdict;
   }
 
+  private clearScratch(): void {
+    clearStale([this.paths.staging, this.paths.runs]);
+  }
+
   private report(verdict: Verdict): void {
     if (verdict.admitted) {
       this.log(`Admitted ${verdict.id}`);
@@ -451,6 +488,7 @@ export class Kata {
   }
 
   async import(dirs: string[]): Promise<Verdict[]> {
+    this.clearScratch();
     const verdicts: Verdict[] = [];
     for (const dir of dirs) {
       const source = path.resolve(dir);
@@ -470,6 +508,7 @@ export class Kata {
   }
 
   async generate(options: { count: number; track?: Track; level?: number; type?: ChallengeType }): Promise<Verdict[]> {
+    this.clearScratch();
     mkdirSync(this.paths.staging, { recursive: true });
     const batch = mkdtempSync(path.join(this.paths.staging, 'generate-'));
     try {
