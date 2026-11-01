@@ -17,14 +17,15 @@ export interface StreakState {
   freezesUsed: number;
 }
 
-// Replays every day from the first recorded one. A refunded day (a flagged daily)
-// is neutral, and today is still in progress, so neither breaks the streak.
+// Replays every day from the first counted one, so days before any streak exists
+// spend no freezes. A refunded day (a flagged daily) is neutral, and today is
+// still in progress, so neither breaks the streak.
 export function computeStreak(records: DayRecord[], today: string): StreakState {
   const state: StreakState = { streak: 0, longest: 0, freezes: STARTING_FREEZES, freezesUsed: 0 };
-  if (records.length === 0) return state;
+  const first = records.filter((record) => record.counted).map((record) => record.day).sort()[0];
+  if (!first) return state;
 
   const byDay = new Map(records.map((record) => [record.day, record]));
-  const first = records.map((record) => record.day).sort()[0];
   let countedRun = 0;
 
   for (let day = first; day <= today; day = addDays(day, 1)) {

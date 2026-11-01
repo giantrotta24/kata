@@ -59,6 +59,11 @@ describe('computeStreak', () => {
     expect(computeStreak(records, '2026-11-05')).toMatchObject({ streak: 1, freezes: 0, freezesUsed: 2 });
   });
 
+  it('spends no freezes on days before the first counted day', () => {
+    const pattern = '..x';
+    expect(computeStreak(days(pattern), lastDay(pattern))).toMatchObject({ streak: 1, freezes: 2 });
+  });
+
   it('treats a refunded (flagged) day as neutral', () => {
     const pattern = 'xxrx';
     expect(computeStreak(days(pattern), lastDay(pattern))).toMatchObject({ streak: 3, freezes: 2, freezesUsed: 0 });
