@@ -1,0 +1,9 @@
+{
+  "id": "gen-vacuous",
+  "title": "Generated but vacuous",
+  "track": "ts-backend",
+  "type": "build",
+  "level": 1,
+  "estimateMinutes": 5,
+  "concepts": ["fixture"]
+}

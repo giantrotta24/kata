@@ -1,0 +1,9 @@
+{
+  "id": "gen-health-check",
+  "title": "Health check endpoint",
+  "track": "ts-backend",
+  "type": "build",
+  "level": 1,
+  "estimateMinutes": 10,
+  "concepts": ["http", "status-codes"]
+}
