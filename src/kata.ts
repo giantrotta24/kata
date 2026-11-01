@@ -485,7 +485,7 @@ export class Kata {
       this.log(`Generating ${options.count} challenge(s) with ${this.config.claudeBin}…`);
       const result = spawnSync(this.config.claudeBin, ['-p', prompt, '--permission-mode', 'acceptEdits'], {
         cwd: batch,
-        stdio: ['ignore', 'inherit', 'inherit'],
+        stdio: ['ignore', 'ignore', 'inherit'],
       });
       if (result.error) throw new KataError(`Could not run ${this.config.claudeBin}: ${result.error.message}`);
       if (result.status !== 0) throw new KataError(`${this.config.claudeBin} exited with status ${result.status}.`);
