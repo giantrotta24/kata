@@ -4,7 +4,7 @@ import path from 'node:path';
 import { clearStale, copyDir, loadBank, parseHints, readMeta, subdirectories } from './bank.js';
 import { openDb, type DB } from './db.js';
 import { dayKey } from './day.js';
-import { homePaths, loadConfig, PACKAGE_ROOT, type Config } from './home.js';
+import { homePaths, loadConfig, PACKAGE_ROOT, type Config, type EditorCommand } from './home.js';
 import { pickDaily, pickExtra, pickReroll, RECENT_TYPES_WINDOW, type PickState } from './pick.js';
 import { DockerRunner, type Runner, type SuiteResult } from './runner.js';
 import {
@@ -55,7 +55,7 @@ export interface KataOptions {
   now?: () => Date;
   log?: (line: string) => void;
   cwd?: string;
-  openEditor?: (command: string, dir: string) => void;
+  openEditor?: (command: EditorCommand, dir: string) => void;
 }
 
 interface Current {
@@ -71,10 +71,15 @@ export interface SubmitOutcome {
 
 const NO_CHALLENGES = 'Nothing eligible in the bank. Run `kata generate` to add challenges.';
 
-function launchEditor(command: string, dir: string): void {
-  const [bin, ...args] = command.split(/\s+/).filter(Boolean);
-  const child = spawn(bin, [...args, dir], { detached: true, stdio: 'ignore' });
-  child.on('error', (error) => console.error(`Could not open the editor (${command}): ${error.message}`));
+export function editorArgv(command: EditorCommand, dir: string): string[] {
+  const parts = typeof command === 'string' ? command.split(/\s+/).filter(Boolean) : command;
+  return [...parts, dir];
+}
+
+function launchEditor(command: EditorCommand, dir: string): void {
+  const [bin, ...args] = editorArgv(command, dir);
+  const child = spawn(bin, args, { detached: true, stdio: 'ignore' });
+  child.on('error', (error) => console.error(`Could not open the editor (${bin}): ${error.message}`));
   child.unref();
 }
 
@@ -94,7 +99,7 @@ export class Kata {
   private readonly now: () => Date;
   private readonly log: (line: string) => void;
   private readonly cwd: string;
-  private readonly openEditor: (command: string, dir: string) => void;
+  private readonly openEditor: (command: EditorCommand, dir: string) => void;
   private connection?: DB;
 
   constructor(options: KataOptions) {

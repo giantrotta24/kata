@@ -6,9 +6,13 @@ import { KataError } from './types.js';
 
 export const PACKAGE_ROOT = fileURLToPath(new URL('..', import.meta.url));
 
+// A string editorCommand is split on whitespace, with no quoting. An array is
+// used as-is, so an argument may contain spaces.
+export type EditorCommand = string | string[];
+
 export interface Config {
   workspaceDir: string;
-  editorCommand: string;
+  editorCommand: EditorCommand;
   claudeBin: string;
 }
 
@@ -50,6 +54,13 @@ export function loadConfig(home: string): Config {
     }
   }
   const config = { ...DEFAULT_CONFIG, ...overrides };
+  const editor: unknown = config.editorCommand;
+  const validEditor =
+    typeof editor === 'string' ||
+    (Array.isArray(editor) && editor.length > 0 && editor.every((part) => typeof part === 'string'));
+  if (!validEditor) {
+    throw new KataError(`editorCommand in ${file} must be a string or a non-empty array of strings.`);
+  }
   return {
     workspaceDir: path.resolve(home, expandTilde(config.workspaceDir)),
     editorCommand: config.editorCommand,
