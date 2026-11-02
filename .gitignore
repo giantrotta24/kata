@@ -2,4 +2,5 @@ node_modules/
 dist/
 .npm-cache/
 .kata-dev/
+.test-tmp/
 .claude/settings.local.json

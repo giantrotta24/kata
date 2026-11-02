@@ -1,0 +1,9 @@
+{
+  "id": "bad-hangs",
+  "title": "Bad fixture: reference solution never returns",
+  "track": "ts-backend",
+  "type": "build",
+  "level": 1,
+  "estimateMinutes": 5,
+  "concepts": ["fixture"]
+}

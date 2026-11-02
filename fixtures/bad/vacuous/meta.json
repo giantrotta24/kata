@@ -1,0 +1,9 @@
+{
+  "id": "bad-vacuous",
+  "title": "Bad fixture: starter already passes",
+  "track": "ts-backend",
+  "type": "build",
+  "level": 1,
+  "estimateMinutes": 5,
+  "concepts": ["fixture"]
+}

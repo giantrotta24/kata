@@ -1,0 +1,10 @@
+{
+  "id": "bad-extend-broken-suite",
+  "title": "Bad fixture: extend starter fails its own suite",
+  "track": "ts-backend",
+  "type": "extend",
+  "level": 1,
+  "estimateMinutes": 5,
+  "concepts": ["fixture"],
+  "existingTests": ["tests/existing.test.ts"]
+}
