@@ -99,14 +99,16 @@ export function parseVitestReport(report: VitestReport): Omit<SuiteResult, 'runM
   return { passed, tests, errors };
 }
 
-interface ExecResult {
+export interface ExecResult {
   code: number | null;
   stdout: string;
   stderr: string;
   timedOut: boolean;
 }
 
-function exec(command: string, args: string[]): Promise<ExecResult> {
+export type Exec = (command: string, args: string[]) => Promise<ExecResult>;
+
+function execProcess(command: string, args: string[]): Promise<ExecResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
@@ -133,20 +135,27 @@ function tail(text: string, lines = 15): string {
   return text.trim().split('\n').slice(-lines).join('\n');
 }
 
+// Each run gets its own compose project, so concurrent runs never share or stop
+// each other's Postgres. Compose project names must be lowercase.
+export function composeProject(outDir: string): string {
+  return `kata-${path.basename(outDir)}`.toLowerCase();
+}
+
 export class DockerRunner implements Runner {
   constructor(
     private readonly runsDir: string,
     private readonly composeFile = path.join(PACKAGE_ROOT, 'docker-compose.yml'),
+    private readonly exec: Exec = execProcess,
   ) {}
 
   async run(request: RunRequest): Promise<SuiteResult> {
     mkdirSync(this.runsDir, { recursive: true });
     const outDir = mkdtempSync(path.join(this.runsDir, 'out-'));
-    const compose = ['compose', '-f', this.composeFile, '-p', 'kata'];
+    const compose = ['compose', '-f', this.composeFile, '-p', composeProject(outDir)];
     const container = `kata-${path.basename(outDir)}`;
     const started = Date.now();
     try {
-      const result = await exec('docker', [
+      const result = await this.exec('docker', [
         ...compose,
         'run',
         '--rm',
@@ -167,9 +176,10 @@ export class DockerRunner implements Runner {
         'runner',
         ...(request.only ?? []).map((file) => `work/${file}`),
       ]);
-      if (result.timedOut) await exec('docker', ['rm', '-f', container]);
-      if (request.track === 'sql') await exec('docker', [...compose, 'stop', 'postgres']);
-      if (result.timedOut) return { ...timedOutResult(OUTER_TIMEOUT_MS), runMs: Date.now() - started };
+      if (result.timedOut) {
+        await this.exec('docker', ['rm', '-f', container]);
+        return { ...timedOutResult(OUTER_TIMEOUT_MS), runMs: Date.now() - started };
+      }
 
       const reportFile = path.join(outDir, 'result.json');
       if (!existsSync(reportFile)) {
@@ -180,6 +190,8 @@ export class DockerRunner implements Runner {
       const report = JSON.parse(readFileSync(reportFile, 'utf8')) as VitestReport;
       return { ...parseVitestReport(report), runMs: Date.now() - started };
     } finally {
+      // A failed teardown must not hide the run's own result or error.
+      await this.exec('docker', [...compose, 'down', '--remove-orphans']).catch(() => undefined);
       rmSync(outDir, { recursive: true, force: true });
     }
   }
