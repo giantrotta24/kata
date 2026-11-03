@@ -93,6 +93,8 @@ Everything lives in `~/.kata`, or `$KATA_HOME`, or `--home <dir>` (the flag wins
 
 Relative paths in `config.json` resolve against the home folder. Workspaces are created at `<workspaceDir>/<date>-<id>/`.
 
+`editorCommand` as a string is split on whitespace, with no quoting: `"cursor --profile \"My Kata\""` does not work. When an argument contains spaces, give an array instead, used as-is: `["cursor", "--profile", "My Kata"]`. The workspace path is appended as the last argument either way.
+
 ## Writing challenges
 
 A challenge folder has `meta.json`, `README.md`, `hints.md` (three `## ` sections: nudge, approach, near-answer), `starter/`, `tests/` and `solution/`. See `fixtures/good/` for one of each track, and `prompts/generate.md` for the full contract.

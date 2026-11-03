@@ -4,7 +4,7 @@ import path from 'node:path';
 import { clearStale, copyDir, loadBank, parseHints, readMeta, subdirectories } from './bank.js';
 import { openDb, type DB } from './db.js';
 import { dayKey } from './day.js';
-import { homePaths, loadConfig, PACKAGE_ROOT, type Config } from './home.js';
+import { homePaths, loadConfig, PACKAGE_ROOT, type Config, type EditorCommand } from './home.js';
 import { pickDaily, pickExtra, pickReroll, RECENT_TYPES_WINDOW, type PickState } from './pick.js';
 import { DockerRunner, type Runner, type SuiteResult } from './runner.js';
 import {
@@ -55,7 +55,7 @@ export interface KataOptions {
   now?: () => Date;
   log?: (line: string) => void;
   cwd?: string;
-  openEditor?: (command: string, dir: string) => void;
+  openEditor?: (command: EditorCommand, dir: string) => void;
 }
 
 interface Current {
@@ -71,10 +71,15 @@ export interface SubmitOutcome {
 
 const NO_CHALLENGES = 'Nothing eligible in the bank. Run `kata generate` to add challenges.';
 
-function launchEditor(command: string, dir: string): void {
-  const [bin, ...args] = command.split(/\s+/).filter(Boolean);
-  const child = spawn(bin, [...args, dir], { detached: true, stdio: 'ignore' });
-  child.on('error', (error) => console.error(`Could not open the editor (${command}): ${error.message}`));
+export function editorArgv(command: EditorCommand, dir: string): string[] {
+  const parts = typeof command === 'string' ? command.split(/\s+/).filter(Boolean) : command;
+  return [...parts, dir];
+}
+
+function launchEditor(command: EditorCommand, dir: string): void {
+  const [bin, ...args] = editorArgv(command, dir);
+  const child = spawn(bin, args, { detached: true, stdio: 'ignore' });
+  child.on('error', (error) => console.error(`Could not open the editor (${bin}): ${error.message}`));
   child.unref();
 }
 
@@ -94,7 +99,7 @@ export class Kata {
   private readonly now: () => Date;
   private readonly log: (line: string) => void;
   private readonly cwd: string;
-  private readonly openEditor: (command: string, dir: string) => void;
+  private readonly openEditor: (command: EditorCommand, dir: string) => void;
   private connection?: DB;
 
   constructor(options: KataOptions) {
@@ -306,50 +311,58 @@ export class Kata {
     this.log(`${passedCount}/${result.tests.length} tests passed in ${(result.runMs / 1000).toFixed(1)}s.`);
     if (result.timedOut) this.log('Timed out: the code never finished. Recorded as a failed submit.');
 
-    this.db
-      .prepare(
-        `INSERT INTO attempts (assignment_id, submitted_at, passed, assisted, tests_passed, tests_total, run_ms)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(assignment.id, now.toISOString(), result.passed ? 1 : 0, assisted ? 1 : 0, passedCount, result.tests.length, result.runMs);
+    const recordAttempt = () =>
+      this.db
+        .prepare(
+          `INSERT INTO attempts (assignment_id, submitted_at, passed, assisted, tests_passed, tests_total, run_ms)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(assignment.id, now.toISOString(), result.passed ? 1 : 0, assisted ? 1 : 0, passedCount, result.tests.length, result.runMs);
 
     if (!result.passed) {
-      this.db.prepare('UPDATE assignments SET failed_submits = failed_submits + 1 WHERE id = ?').run(assignment.id);
+      this.db.transaction(() => {
+        recordAttempt();
+        this.db.prepare('UPDATE assignments SET failed_submits = failed_submits + 1 WHERE id = ?').run(assignment.id);
+      })();
       this.log(`Not yet. Failed submits: ${assignment.failed_submits + 1}.`);
       return { passed: false, xp: 0, result };
     }
 
     const today = dayKey(now);
-    if (assignment.kind === 'daily' && assignment.day !== today) assignment = this.carryOver(assignment, today);
     const xp = xpFor({ level: assignment.level, failedSubmits: assignment.failed_submits, hints: assignment.hints, assisted });
     const durationSeconds = Math.round((now.getTime() - new Date(assignment.started_at).getTime()) / 1000);
 
-    this.db.transaction(() => {
+    const levelChange = this.db.transaction(() => {
+      recordAttempt();
+      if (assignment.kind === 'daily' && assignment.day !== today) assignment = this.carryOver(assignment, today);
       this.db
         .prepare(
           `UPDATE assignments SET status = 'passed', passed_at = ?, xp = ?, assisted = ?, duration_seconds = ? WHERE id = ?`,
         )
         .run(now.toISOString(), xp, assisted ? 1 : 0, durationSeconds, assignment.id);
-      if (!assisted) {
-        this.recordOutcome(assignment.track, passOutcome({ failedSubmits: assignment.failed_submits, hints: assignment.hints }));
-      }
       if (assignment.kind === 'daily') {
         this.ensureDay(today);
         this.db.prepare('UPDATE days SET counted = 1 WHERE day = ?').run(today);
       }
+      if (assisted) return undefined;
+      return this.recordOutcome(assignment.track, passOutcome({ failedSubmits: assignment.failed_submits, hints: assignment.hints }));
     })();
 
+    if (levelChange) this.log(levelChange);
     this.log(assisted ? 'Passed (assisted): streak kept, no XP.' : `Passed! +${xp} XP.`);
     this.log(`Time from start: ${Math.round(durationSeconds / 60)} min.`);
     return { passed: true, xp, result };
   }
 
-  private recordOutcome(track: Track, outcome: Outcome): void {
+  // Returns the level-change message, for the caller to log once its
+  // transaction has committed.
+  private recordOutcome(track: Track, outcome: Outcome): string | undefined {
     const before = this.trackProgress(track);
     const after = applyOutcome(before, outcome);
     this.db.prepare('UPDATE tracks SET level = ?, clean = ?, rough = ? WHERE track = ?').run(after.level, after.clean, after.rough, track);
-    if (after.level > before.level) this.log(`${track} levelled up to ${after.level}.`);
-    if (after.level < before.level) this.log(`${track} dropped to level ${after.level}.`);
+    if (after.level > before.level) return `${track} levelled up to ${after.level}.`;
+    if (after.level < before.level) return `${track} dropped to level ${after.level}.`;
+    return undefined;
   }
 
   // --- help, skipping, flagging -------------------------------------------------
@@ -384,12 +397,13 @@ export class Kata {
       throw new KataError(`No other ${daily.track} level ${daily.level} challenge in the bank. Run \`kata generate\`.`);
     }
     const current = daily;
-    const assignment = this.db.transaction(() => {
+    const { assignment, levelChange } = this.db.transaction(() => {
       this.db.prepare(`UPDATE assignments SET status = 'skipped' WHERE id = ?`).run(current.id);
-      this.recordOutcome(current.track, 'rough');
+      const levelChange = this.recordOutcome(current.track, 'rough');
       this.db.prepare('UPDATE days SET rerolled = 1 WHERE day = ?').run(day);
-      return this.assign(replacement, day, 'daily');
+      return { assignment: this.assign(replacement, day, 'daily'), levelChange };
     })();
+    if (levelChange) this.log(levelChange);
     this.log(`Rerolled away from ${current.title}. New daily:`);
     this.describe(assignment);
     this.open(assignment, open);

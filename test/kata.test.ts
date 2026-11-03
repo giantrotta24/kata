@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { Kata } from '../src/kata.js';
@@ -121,6 +121,27 @@ describe('submit', () => {
     expect(lines).toContain('Timed out: the code never finished. Recorded as a failed submit.');
   });
 
+  it('records nothing from a passing submit whose writes fail partway', async () => {
+    const { kata, solve } = setup();
+    const daily = kata.today({ open: false });
+    kata.db.prepare(`DELETE FROM tracks WHERE track = 'ts-backend'`).run();
+    solve(daily.workspace);
+    await expect(kata.submit()).rejects.toThrow();
+    expect(kata.db.prepare('SELECT COUNT(*) AS count FROM attempts').get()).toEqual({ count: 0 });
+    expect(kata.db.prepare('SELECT status FROM assignments WHERE id = ?').get(daily.id)).toEqual({ status: 'active' });
+    expect(countedDays(kata)).toEqual([]);
+  });
+
+  it('logs a level-up after the pass is recorded', async () => {
+    const { kata, lines, solve } = setup();
+    const daily = kata.today({ open: false });
+    kata.db.prepare(`UPDATE tracks SET clean = 2 WHERE track = 'ts-backend'`).run();
+    const { level } = kata.db.prepare(`SELECT level FROM tracks WHERE track = 'ts-backend'`).get() as { level: number };
+    solve(daily.workspace);
+    await kata.submit();
+    expect(lines).toContain(`ts-backend levelled up to ${level + 1}.`);
+  });
+
   it('clears stale scratch entries under staging/ and runs/', async () => {
     const { kata, home } = setup();
     const staleStaging = makeStale(path.join(home, 'staging', 'generate-old'));
@@ -165,6 +186,21 @@ describe('reroll', () => {
     expect(kata.today({ open: false }).id).toBe(second.id);
     expect(() => kata.reroll({ open: false })).toThrow(/already rerolled/);
     expect(kata.db.prepare(`SELECT rough FROM tracks WHERE track = 'ts-backend'`).get()).toEqual({ rough: 1 });
+  });
+
+  it('rolls back every write and prints no level message when assigning the new daily fails', () => {
+    const { kata, home, lines } = setup();
+    const daily = kata.today({ open: false });
+    kata.db.prepare(`UPDATE tracks SET level = 2, clean = 0, rough = 1 WHERE track = 'ts-backend'`).run();
+    for (const id of ['alpha', 'bravo', 'charlie'].filter((id) => id !== daily.challenge_id)) {
+      rmSync(path.join(home, 'bank', id, 'README.md'));
+    }
+    expect(() => kata.reroll({ open: false })).toThrow(/README\.md/);
+    expect(kata.db.prepare(`SELECT level, clean, rough FROM tracks WHERE track = 'ts-backend'`).get()).toEqual({ level: 2, clean: 0, rough: 1 });
+    expect(kata.db.prepare('SELECT rerolled FROM days WHERE day = ?').get(daily.day)).toEqual({ rerolled: 0 });
+    expect(kata.db.prepare('SELECT status FROM assignments WHERE id = ?').get(daily.id)).toEqual({ status: 'active' });
+    expect(kata.db.prepare('SELECT COUNT(*) AS count FROM assignments').get()).toEqual({ count: 1 });
+    expect(lines.some((line) => /level/.test(line) && line.startsWith('ts-backend'))).toBe(false);
   });
 
   it('is available again the next day', () => {
